@@ -115,3 +115,41 @@ jobs:
             "yundrone-ble-server-installer-$(cat VERSION).tar.gz" \
             "yundrone-ble-server-installer-$(cat VERSION).tar.gz.sha256" \
             --clobber
+
+  server:
+    name: Server (${{ matrix.platform }})
+    runs-on: ${{ matrix.os }}
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-amd64
+            os: ubuntu-latest
+          - platform: linux-arm64
+            os: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+      - name: Build compatible Linux server package
+        env:
+          PLATFORMS: ${{ matrix.platform }}
+        run: scripts/release/package-server-release-docker.sh
+      - name: Verify server executable
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          version="$(cat VERSION)"
+          mkdir -p /tmp/server-check
+          tar -xzf "dist/ble-server/releases/$version/yundrone-ble-server-$PLATFORM.tar.gz" -C /tmp/server-check
+          test "$(cat /tmp/server-check/VERSION)" = "$version"
+          /tmp/server-check/yundrone-ble-server --version | grep -F "$version"
+          /tmp/server-check/yundrone-ble-server --help >/dev/null
+      - name: Upload server package
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" \
+            "dist/ble-server/releases/$(cat VERSION)/yundrone-ble-server-$PLATFORM.tar.gz" \
+            --clobber
