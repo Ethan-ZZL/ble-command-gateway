@@ -57,6 +57,7 @@ PATH="$TMP_DIR/bin:$PATH"
 assert_eq "$(default_adapter_name)" "hci0"
 assert_eq "$(identity_serial)" "131415"
 assert_eq "$(identity_name)" "yundrone-bleinit-131415"
+rmdir "$BLUETOOTH_CLASS_DIR/hci0"
 rm -f "$TMP_DIR/bin/bluetoothctl"
 PATH="${PATH#"$TMP_DIR/bin:"}"
 

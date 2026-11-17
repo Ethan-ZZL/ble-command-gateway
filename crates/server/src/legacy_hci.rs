@@ -161,16 +161,29 @@ fn run_hcitool(args: &[String]) -> anyhow::Result<()> {
 
 #[cfg(target_os = "linux")]
 fn command_complete_status(output: &str) -> Option<u8> {
-    output
-        .lines()
-        .filter_map(|line| {
-            let bytes = line
-                .split_whitespace()
-                .map(|value| u8::from_str_radix(value, 16).ok())
-                .collect::<Option<Vec<_>>>()?;
-            (bytes.len() == 4 && bytes[0] == 0x05).then_some(bytes[3])
-        })
-        .last()
+    let mut command_complete = false;
+    let mut status = None;
+    for line in output.lines() {
+        let line = line.trim();
+        if line.starts_with('>') || line.starts_with('<') {
+            command_complete = line.starts_with("> HCI Event: 0x0e plen 4");
+            continue;
+        }
+        if !command_complete {
+            continue;
+        }
+        let bytes = line
+            .split_whitespace()
+            .map(|value| u8::from_str_radix(value, 16).ok())
+            .collect::<Option<Vec<_>>>();
+        if let Some(bytes) = bytes {
+            // Byte zero is command credits, not a fixed event identifier.
+            if bytes.len() == 4 {
+                status = Some(bytes[3]);
+            }
+        }
+    }
+    status
 }
 
 #[cfg(target_os = "linux")]
@@ -233,7 +246,8 @@ fn build_scan_response_payload(service_uuid: Uuid) -> anyhow::Result<Vec<u8>> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::{
-        build_primary_payload, build_scan_response_payload, format_data_args, format_interval_args,
+        build_primary_payload, build_scan_response_payload, command_complete_status,
+        format_data_args, format_interval_args,
     };
     use std::time::Duration;
     use uuid::Uuid;
@@ -299,6 +313,15 @@ mod tests {
         assert_eq!(&args[..4], &["03", "02", "01", "06"]);
         assert_eq!(args.len(), 32);
         assert!(args[4..].iter().all(|value| value == "00"));
+    }
+
+    #[test]
+    fn ignores_empty_and_short_lines_and_accepts_controller_credit_counts() {
+        assert_eq!(
+            command_complete_status("< HCI Command: ogf 0x08, ocf 0x000a, plen 1\n  01\n> HCI Event: 0x0e plen 4\n  01 0A 20 0C\n"),
+            Some(0x0c)
+        );
+        assert_eq!(command_complete_status("\n  01 0A\n"), None);
     }
 
     #[test]
