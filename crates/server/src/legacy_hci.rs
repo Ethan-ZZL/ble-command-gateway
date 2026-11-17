@@ -137,17 +137,53 @@ fn run_hcitool(args: &[String]) -> anyhow::Result<()> {
         .args(args)
         .output()
         .context("spawn hcitool")?;
-    if output.status.success() {
-        return Ok(());
-    }
     let stderr = String::from_utf8_lossy(&output.stderr);
     let stdout = String::from_utf8_lossy(&output.stdout);
+    if output.status.success() {
+        if let Some(status) = command_complete_status(&stdout) {
+            if status != 0 {
+                return Err(anyhow!(
+                    "hcitool controller status=0x{status:02x} stdout={} stderr={}",
+                    stdout.trim(),
+                    stderr.trim()
+                ));
+            }
+        }
+        return Ok(());
+    }
     Err(anyhow!(
         "hcitool failed: status={} stdout={} stderr={}",
         output.status,
         stdout.trim(),
         stderr.trim()
     ))
+}
+
+#[cfg(target_os = "linux")]
+fn command_complete_status(output: &str) -> Option<u8> {
+    let mut command_complete = false;
+    let mut status = None;
+    for line in output.lines() {
+        let line = line.trim();
+        if line.starts_with('>') || line.starts_with('<') {
+            command_complete = line.starts_with("> HCI Event: 0x0e plen 4");
+            continue;
+        }
+        if !command_complete {
+            continue;
+        }
+        let bytes = line
+            .split_whitespace()
+            .map(|value| u8::from_str_radix(value, 16).ok())
+            .collect::<Option<Vec<_>>>();
+        if let Some(bytes) = bytes {
+            // Byte zero is command credits, not a fixed event identifier.
+            if bytes.len() == 4 {
+                status = Some(bytes[3]);
+            }
+        }
+    }
+    status
 }
 
 #[cfg(target_os = "linux")]
@@ -210,7 +246,8 @@ fn build_scan_response_payload(service_uuid: Uuid) -> anyhow::Result<Vec<u8>> {
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::{
-        build_primary_payload, build_scan_response_payload, format_data_args, format_interval_args,
+        build_primary_payload, build_scan_response_payload, command_complete_status,
+        format_data_args, format_interval_args,
     };
     use std::time::Duration;
     use uuid::Uuid;
@@ -276,5 +313,26 @@ mod tests {
         assert_eq!(&args[..4], &["03", "02", "01", "06"]);
         assert_eq!(args.len(), 32);
         assert!(args[4..].iter().all(|value| value == "00"));
+    }
+
+    #[test]
+    fn ignores_empty_and_short_lines_and_accepts_controller_credit_counts() {
+        assert_eq!(
+            command_complete_status("< HCI Command: ogf 0x08, ocf 0x000a, plen 1\n  01\n> HCI Event: 0x0e plen 4\n  01 0A 20 0C\n"),
+            Some(0x0c)
+        );
+        assert_eq!(command_complete_status("\n  01 0A\n"), None);
+    }
+
+    #[test]
+    fn detects_controller_command_disallowed_status() {
+        assert_eq!(
+            command_complete_status("> HCI Event: 0x0e plen 4\n  05 0A 20 0C"),
+            Some(0x0c)
+        );
+        assert_eq!(
+            command_complete_status("> HCI Event: 0x0e plen 4\n  05 0A 20 00"),
+            Some(0x00)
+        );
     }
 }
